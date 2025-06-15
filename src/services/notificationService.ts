@@ -4,7 +4,7 @@ import { User } from '../models/user';
 import { getAllUsers } from './userService';
 import { getDueListings, markListingNotificationSent } from './earnApiService';
 
-const UTM_SOURCE = '?utm_source=telegrambot';
+const UTM_APPENDIX = 'utm_source=telegrambot';
 
 const formatListingMessage = (listing: Listing): string => {
     let rewardString = '';
@@ -18,6 +18,13 @@ const formatListingMessage = (listing: Listing): string => {
         rewardString = `$${listing.rewardUSD} USD`;
     }
 
+    let finalLink = listing.link;
+    if (finalLink.includes('?')) {
+        finalLink += `&${UTM_APPENDIX}`;
+    } else {
+        finalLink += `?${UTM_APPENDIX}`;
+    }
+
     return `
 📢 *New Opportunity on Superteam Earn!* 📢
 
@@ -28,7 +35,7 @@ const formatListingMessage = (listing: Listing): string => {
 *Deadline:* ${listing.deadline}
 *Skills:* ${listing.skills.join(', ') || 'N/A'}
 
-🔗 *View Listing:* ${listing.link}${UTM_SOURCE}
+🔗 *View Listing:* ${finalLink}
     `;
 };
 
