@@ -9,27 +9,67 @@ const notifiedListingIds = new Set<string>();
 
 const mapPrismaBountyToListing = (bounty: any): Listing | null => {
     let listingType: ListingType;
+    let tabName: string;
+
     switch (bounty.type) {
         case PrismaBountyType.bounty:
             listingType = ListingType.BOUNTY;
+            tabName = 'bounties';
             break;
         case PrismaBountyType.project:
             listingType = ListingType.PROJECT;
+            tabName = 'projects';
             break;
         default:
-            // console.warn(`Unsupported bounty type: ${bounty.type} for bounty ID ${bounty.id}`);
-            return null; // Or handle hackathon/other types if needed
+            return null; 
     }
 
     let skillsArray: string[] = [];
     if (bounty.skills && Array.isArray(bounty.skills)) {
         skillsArray = bounty.skills.filter(skill => typeof skill === 'string');
-    } else if (typeof bounty.skills === 'string') {
-        // If skills is a comma-separated string, parse it (example)
-        // skillsArray = bounty.skills.split(',').map(s => s.trim());
-        // For now, assuming it's an array or null as per Json? type
+    } else if (typeof bounty.skills === 'string' && bounty.skills.trim() !== '') {
+        // Fallback if skills is a stringified JSON array or comma-separated, needs robust parsing
+        try {
+            const parsedSkills = JSON.parse(bounty.skills);
+            if (Array.isArray(parsedSkills)) {
+                skillsArray = parsedSkills.filter(skill => typeof skill === 'string');
+            }
+        } catch (e) {
+            // If not JSON, assume comma-separated as a last resort, or log error
+            // skillsArray = bounty.skills.split(',').map((s: string) => s.trim()).filter((s: string) => s);
+            console.warn(`Could not parse skills JSON for bounty ${bounty.id}: ${bounty.skills}`);
+        }
     }
 
+    // Construct the link based on new examples
+    let listingLink = `https://earn.superteam.fun/all/?tab=${tabName}`;
+
+    if (listingType === ListingType.BOUNTY) {
+        // Define primary categories to look for in skills for URL construction
+        // These should be the exact values expected in the URL's 'category' parameter.
+        const primaryUrlCategories = ['Content', 'Development', 'Design', 'Marketing']; // Case-sensitive as per URL examples
+        let foundCategoryForUrl: string | null = null;
+
+        for (const skill of skillsArray) {
+            const matchedCategory = primaryUrlCategories.find(cat => cat.toLowerCase() === skill.toLowerCase());
+            if (matchedCategory) {
+                foundCategoryForUrl = matchedCategory; // Use the defined casing for the URL
+                break;
+            }
+        }
+        if (foundCategoryForUrl) {
+            listingLink += `&category=${foundCategoryForUrl}`;
+        }
+        // If no specific category is found, the link remains ...?tab=bounties
+        // If you need to link to the specific bounty page as a fallback:
+        // else { listingLink = `https://earn.superteam.fun/listings/${bounty.slug}`; }
+        // For now, sticking to /all/ structure.
+    }
+    // For projects, the link is just ...?tab=projects as per example.
+    // If projects also need a category, the logic above can be adapted.
+
+    // If the slug is still important for direct navigation, consider how to use it.
+    // The current examples point to a filterable "/all/" page.
 
     return {
         id: bounty.id,
@@ -42,12 +82,11 @@ const mapPrismaBountyToListing = (bounty: any): Listing | null => {
             { min: bounty.minRewardAsk, max: bounty.maxRewardAsk } : undefined,
         isVariableComp: bounty.compensationType === 'variable',
         listingType: listingType,
-        skills: skillsArray,
-        geographies: bounty.region ? [bounty.region] : ['GLOBAL'], // Prisma schema has region, not geographies
-        link: `https://earn.superteam.fun/listings/${bounty.slug}`, // Assuming this link structure
+        skills: skillsArray, // skillsArray contains all skills from the record
+        geographies: bounty.region ? [bounty.region.toUpperCase()] : ['GLOBAL'],
+        link: listingLink, // The newly constructed link
         deadline: bounty.deadline ? new Date(bounty.deadline).toLocaleDateString() : 'N/A',
-        publishedAt: bounty.publishedAt ? new Date(bounty.publishedAt) : new Date(), // Fallback, though publishedAt should exist
-        // notifiedAt will be handled by the notifiedListingIds set for now
+        publishedAt: bounty.publishedAt ? new Date(bounty.publishedAt) : new Date(),
     };
 };
 
