@@ -1,109 +1,151 @@
 import { Listing, ListingType } from '../models/listing';
+import prisma from '../prismaClient';
+import { BountyType as PrismaBountyType } from '@prisma/client';
 
-// Mock data - in a real scenario, this would fetch from Superteam Earn DB/API
-const mockListings: Listing[] = [
-    {
-        id: '1',
-        title: 'Build a Telegram Bot',
-        sponsorName: 'Solana Foundation',
-        rewardTokenName: 'USDC',
-        rewardValue: 1000,
-        rewardUSD: 1000,
-        listingType: ListingType.BOUNTY,
-        skills: ['typescript', 'telegram-api', 'nodejs'],
-        geographies: ['Global'],
-        link: 'https://earn.superteam.fun/listings/1',
-        deadline: '2024-08-01',
-        publishedAt: new Date(Date.now() - 15 * 60 * 60 * 1000) // ~15 hours ago
-    },
-    {
-        id: '2',
-        title: 'Develop a dApp',
-        sponsorName: 'Superteam',
-        listingType: ListingType.PROJECT,
-        usdRange: { min: 2000, max: 5000 },
-        rewardUSD: 2000, // Lower end of range for filtering
-        skills: ['rust', 'solana', 'react'],
-        geographies: ['Vietnam', 'India'],
-        link: 'https://earn.superteam.fun/listings/2',
-        deadline: '2024-09-15',
-        publishedAt: new Date(Date.now() - 20 * 60 * 60 * 1000) // ~20 hours ago
-    },
-    {
-        id: '3',
-        title: 'Marketing Campaign for NFT Project',
-        sponsorName: 'NFT Innovators',
-        isVariableComp: true,
-        rewardUSD: 0, // For variable comp, might need a different handling or min expectation
-        listingType: ListingType.PROJECT,
-        skills: ['marketing', 'social-media', 'nft'],
-        geographies: ['Global'],
-        link: 'https://earn.superteam.fun/listings/3',
-        deadline: '2024-07-30',
-        publishedAt: new Date() // Published just now
-    },
-    {
-        id: '4',
-        title: 'Vietnamese Community Moderator',
-        sponsorName: 'Solana VN',
-        rewardTokenName: 'USDC',
-        rewardValue: 300,
-        rewardUSD: 300,
-        listingType: ListingType.BOUNTY,
-        skills: ['community-management', 'vietnamese'],
-        geographies: ['Vietnam'],
-        link: 'https://earn.superteam.fun/listings/4',
-        deadline: '2024-08-10',
-        publishedAt: new Date(Date.now() - 5 * 60 * 60 * 1000) // ~5 hours ago
-    }
-];
-
-// In-memory store for listings that have been processed for notification scheduling
+// In-memory store for listings that have been processed for notification scheduling.
+// In a production system, you'd ideally have a field in the Bounties table
+// (e.g., `notifiedAt` or `isNotificationSent`) to track this.
 const notifiedListingIds = new Set<string>();
 
-export const getNewListings = async (): Promise<Listing[]> => {
-    // Simulate fetching new listings that haven't been processed for notification yet
-    // In a real system, you'd query your DB for listings published > 12 hours ago
-    // and not yet marked as 'notification_scheduled' or similar.
-    // For this mock, we'll filter based on publishedAt and if we've "notified" them.
-    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-    
-    return mockListings.filter(listing => {
-        // Check if listing is older than 0 hours (i.e., published)
-        // and younger than 12 hours for the notification trigger logic
-        // The actual notification sending will happen after 12 hours of publish time.
-        // This function simulates fetching listings that are candidates for notification.
-        return listing.publishedAt <= new Date() && !notifiedListingIds.has(listing.id);
-    });
+const mapPrismaBountyToListing = (bounty: any): Listing | null => {
+    let listingType: ListingType;
+    switch (bounty.type) {
+        case PrismaBountyType.bounty:
+            listingType = ListingType.BOUNTY;
+            break;
+        case PrismaBountyType.project:
+            listingType = ListingType.PROJECT;
+            break;
+        default:
+            // console.warn(`Unsupported bounty type: ${bounty.type} for bounty ID ${bounty.id}`);
+            return null; // Or handle hackathon/other types if needed
+    }
+
+    let skillsArray: string[] = [];
+    if (bounty.skills && Array.isArray(bounty.skills)) {
+        skillsArray = bounty.skills.filter(skill => typeof skill === 'string');
+    } else if (typeof bounty.skills === 'string') {
+        // If skills is a comma-separated string, parse it (example)
+        // skillsArray = bounty.skills.split(',').map(s => s.trim());
+        // For now, assuming it's an array or null as per Json? type
+    }
+
+
+    return {
+        id: bounty.id,
+        title: bounty.title,
+        sponsorName: bounty.sponsor?.name || 'N/A',
+        rewardTokenName: bounty.token || undefined,
+        rewardValue: bounty.rewardAmount || undefined,
+        rewardUSD: bounty.usdValue || 0,
+        usdRange: bounty.compensationType === 'range' && bounty.minRewardAsk && bounty.maxRewardAsk ?
+            { min: bounty.minRewardAsk, max: bounty.maxRewardAsk } : undefined,
+        isVariableComp: bounty.compensationType === 'variable',
+        listingType: listingType,
+        skills: skillsArray,
+        geographies: bounty.region ? [bounty.region] : ['GLOBAL'], // Prisma schema has region, not geographies
+        link: `https://earn.superteam.fun/listings/${bounty.slug}`, // Assuming this link structure
+        deadline: bounty.deadline ? new Date(bounty.deadline).toLocaleDateString() : 'N/A',
+        publishedAt: bounty.publishedAt ? new Date(bounty.publishedAt) : new Date(), // Fallback, though publishedAt should exist
+        // notifiedAt will be handled by the notifiedListingIds set for now
+    };
 };
 
-// Call this function after a notification has been successfully sent for a listing
-export const markListingAsNotified = (listingId: string) => {
-    notifiedListingIds.add(listingId);
-};
 
-// This function would be used by the notification service to get listings
-// that are due to be notified (published 12 hours ago or more)
+// This function fetches listings that were published at least 12 hours ago
+// and haven't had a notification sent yet.
 export const getDueListings = async (): Promise<Listing[]> => {
     const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-    return mockListings.filter(listing => 
-        listing.publishedAt <= twelveHoursAgo && !listing.notifiedAt
-    );
+
+    try {
+        const duePrismaBounties = await prisma.bounties.findMany({
+            where: {
+                isPublished: true,
+                isActive: true,
+                isArchived: false,
+                status: 'OPEN', // Assuming 'OPEN' status means it's active for applications
+                publishedAt: {
+                    lte: twelveHoursAgo, // Published 12 hours ago or earlier
+                },
+                // Add a filter here if you add a `notifiedAt` or `isNotificationSent` field to your schema
+                // e.g., notifiedAt: null
+            },
+            include: {
+                sponsor: { // To get sponsor's name
+                    select: {
+                        name: true,
+                    },
+                },
+            },
+            orderBy: {
+                publishedAt: 'asc', // Process older listings first
+            },
+        });
+
+        const listings: Listing[] = [];
+        for (const bounty of duePrismaBounties) {
+            // Filter out listings that we've already "notified" using the in-memory set
+            if (!notifiedListingIds.has(bounty.id)) {
+                const mappedListing = mapPrismaBountyToListing(bounty);
+                if (mappedListing) {
+                    listings.push(mappedListing);
+                }
+            }
+        }
+        return listings;
+
+    } catch (error) {
+        console.error("Error fetching due listings from database:", error);
+        return [];
+    }
 };
 
-// This function simulates updating the listing in the DB after notification
+// This function simulates marking the listing as "notification sent".
+// In a real DB, you'd update a field on the bounty record.
 export const markListingNotificationSent = async (listingId: string): Promise<void> => {
-    const listing = mockListings.find(l => l.id === listingId);
-    if (listing) {
-        listing.notifiedAt = new Date();
-        console.log(`Marked listing ${listingId} as notification sent.`);
+    notifiedListingIds.add(listingId);
+    // Example of how you might update the DB if you had a `notifiedAt` field:
+    /*
+    try {
+        await prisma.bounties.update({
+            where: { id: listingId },
+            data: { notifiedAt: new Date() }, // Assuming you add `notifiedAt DateTime?` to your schema
+        });
+        console.log(`Marked listing ${listingId} as notification sent in DB.`);
+    } catch (error) {
+        console.error(`Error marking listing ${listingId} as notified in DB:`, error);
     }
+    */
+    console.log(`Marked listing ${listingId} as notification sent (in-memory).`);
 };
 
 
 // For configuration: list of available skills on Earn
 export const getAvailableSkills = (): string[] => {
-    // In a real app, fetch this from the Earn platform
+    // In a real app, fetch this from the Earn platform or a dedicated skills table/column.
+    // For now, using the previous mock list.
+    // If skills are stored consistently in `Bounties.skills` (e.g., as an array of strings),
+    // you could query distinct skills:
+    /*
+    try {
+        const allBountiesWithSkills = await prisma.bounties.findMany({
+            where: { skills: { not: null } },
+            select: { skills: true }
+        });
+        const skillSet = new Set<string>();
+        allBountiesWithSkills.forEach(bounty => {
+            if (Array.isArray(bounty.skills)) {
+                bounty.skills.forEach(skill => {
+                    if (typeof skill === 'string') skillSet.add(skill.toLowerCase());
+                });
+            }
+        });
+        return Array.from(skillSet).sort();
+    } catch (error) {
+        console.error("Error fetching distinct skills:", error);
+        // Fallback to mock
+    }
+    */
     return [
         'typescript', 'javascript', 'python', 'rust', 'solana', 'react', 'vue', 'angular',
         'nodejs', 'go', 'java', 'swift', 'kotlin', 'smart-contracts', 'defi', 'nft',
